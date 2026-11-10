@@ -8,7 +8,8 @@ function pieceStyle(size: number): CSSProperties {
 }
 
 function Piece({ c }: { c: Character }) {
-  return <span className="token-piece" data-token={c.id}><span className={`token ${c.hp === 0 ? 'fallen' : ''}`}><span>{characterInitials(c.name)}</span></span><span className="token-stat hp" role="progressbar" aria-label={`${c.name} HP`} aria-valuemin={0} aria-valuemax={c.maxHp} aria-valuenow={c.hp}><i style={{ width: `${c.hp / c.maxHp * 100}%` }}/></span><span className={`token-stat oh ${c.oh > c.maxOh ? 'overheat' : ''}`} role="progressbar" aria-label={`${c.name} OH`} aria-valuemin={0} aria-valuemax={Math.max(c.maxOh, c.oh, 1)} aria-valuenow={c.oh}><i style={{ width: `${c.maxOh ? Math.min(100, c.oh / c.maxOh * 100) : 0}%` }}/></span></span>;
+  const label = characterInitials(c.name), length = [...label].length;
+  return <span className="token-piece" data-token={c.id}><span className={`token ${c.hp === 0 ? 'fallen' : ''}`}><svg className="token-label" viewBox="0 0 100 100" aria-hidden="true"><text x="50" y="51" textAnchor="middle" dominantBaseline="central" fontSize={Math.min(40, 180 / Math.max(1, length))} textLength={Math.min(68, length * 28)} lengthAdjust="spacingAndGlyphs">{label}</text></svg></span><span className="token-stat hp" role="progressbar" aria-label={`${c.name} HP`} aria-valuemin={0} aria-valuemax={c.maxHp} aria-valuenow={c.hp}><i style={{ width: `${c.hp / c.maxHp * 100}%` }}/></span><span className={`token-stat oh ${c.oh > c.maxOh ? 'overheat' : ''}`} role="progressbar" aria-label={`${c.name} OH`} aria-valuemin={0} aria-valuemax={Math.max(c.maxOh, c.oh, 1)} aria-valuenow={c.oh}><i style={{ width: `${c.maxOh ? Math.min(100, c.oh / c.maxOh * 100) : 0}%` }}/></span></span>;
 }
 type Drag = { id: string; pointer: number; owner: HTMLButtonElement; startX: number; startY: number; originX: number; originY: number; active: boolean };
 export function BattleGrid({ board, selected, moving, chooseCell, move, notify }: {

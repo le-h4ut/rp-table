@@ -50,9 +50,20 @@ export function cloneCharacter(b: Board, sourceId: string, newId: string): { boa
   if (b.characters.length >= 200) throw new Error('Можно создать не больше 200 карточек.');
   if (!newId || b.characters.some(c => c.id === newId)) throw new Error('Не удалось создать новый ID карточки.');
   const names = new Set(b.characters.map(c => c.name));
-  const base = source.name.replace(/ — копия(?: \d+)?$/, '');
-  let name = '', index = 1;
-  do { const suffix = ` — копия${index > 1 ? ` ${index}` : ''}`; name = base.slice(0, 80 - suffix.length).trimEnd() + suffix; index++; } while (names.has(name));
+  const parsed = splitNumberedName(source.name);
+  const base = parsed.base.replace(/ — копия(?: \d+)?$/, '').trim();
+  let highest = parsed.digits === null ? 1n : BigInt(parsed.digits);
+  if (highest < 1n) highest = 1n;
+  for (const c of b.characters) {
+    const other = splitNumberedName(c.name);
+    if (other.digits === null) continue;
+    // Keep the original digit string here: №0009 belongs to the family of №9.
+    let sameFamily = other.base === base;
+    if (!sameFamily) { try { sameFamily = other.base === fitNameBase(base, 80 - other.suffixLength); } catch { continue; } }
+    if (sameFamily && BigInt(other.digits) > highest) highest = BigInt(other.digits);
+  }
+  let index = highest + 1n, name = numberedName(base, index.toString());
+  while (names.has(name)) { index++; name = numberedName(base, index.toString()); }
   const character: Character = { ...structuredClone(source), id: newId, name, x: null, y: null };
   return { board: validateBoard({ ...b, characters: [...b.characters, character] }), character };
 }
@@ -96,4 +107,35 @@ export function removeFolder(b: Board, id: string): Board {
   const f = b.folders.find(f => f.id === id); if (!f) throw new Error('Папка не найдена.');
   return validateBoard({ ...b, folders: b.folders.filter(f => f.id !== id).map(c => c.parentId === id ? { ...c, parentId: f.parentId } : c), characters: b.characters.map(c => c.folderId === id ? { ...c, folderId: f.parentId } : c) });
 }
-export function characterInitials(name: string) { return name.trim().split(/\s+/).slice(0, 2).map(s => [...s][0]).join('').toUpperCase(); }
+export function splitNumberedName(name: string): { base: string; digits: string | null; suffixLength: number } {
+  const clean = name.trim(), match = /^(.*?)\s*№\s*(\d+)$/u.exec(clean);
+  return match ? { base: match[1].trimEnd(), digits: match[2], suffixLength: clean.length - match[1].trimEnd().length } : { base: clean, digits: null, suffixLength: 0 };
+}
+function fitNameBase(base: string, limit: number): string {
+  const parts = base.split(/(«\s*№\s*\d+\s*»)/u), literal = /^«\s*№\s*\d+\s*»$/u;
+  const required = parts.filter(p => literal.test(p)).reduce((n, p) => n + p.length, 0);
+  if (limit < required || limit < 0) throw new Error('Номер или обозначение в кавычках не помещается в имя из 80 символов.');
+  let remaining = limit - required;
+  return parts.map(part => {
+    if (literal.test(part)) return part;
+    let result = '';
+    for (const char of part) { if (char.length > remaining) break; result += char; remaining -= char.length; }
+    return result;
+  }).join('').trim();
+}
+function numberedName(base: string, digits: string): string {
+  const suffix = `№${digits}`;
+  const stem = fitNameBase(base, 80 - suffix.length - (base ? 1 : 0));
+  return stem ? `${stem} ${suffix}` : suffix;
+}
+export function characterInitials(name: string): string {
+  const { base, digits } = splitNumberedName(name);
+  const units = base.match(/«\s*№\s*\d+\s*»|\p{L}[\p{L}\p{M}]*/gu) ?? [];
+  let letters = 0;
+  const label = units.map(unit => {
+    if (unit.startsWith('«')) return `№${unit.match(/\d+/u)![0]}`;
+    if (letters++ >= 2) return '';
+    return unit.match(/^\p{L}\p{M}*/u)![0].toUpperCase();
+  }).join('');
+  return digits === null ? label : `${label}${label ? ' ' : ''}${digits}`;
+}

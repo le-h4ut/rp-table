@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyBoard, moveCharacter, cloneCharacter, preparePlacement, fitCellSize, resizeBoard, validateBoard, numberInput, currentInput, saveFolder, removeFolder, MAX_VALUE, type Board, type RecordData } from '../src/domain';
+import { emptyBoard, moveCharacter, cloneCharacter, characterInitials, preparePlacement, fitCellSize, resizeBoard, validateBoard, numberInput, currentInput, saveFolder, removeFolder, MAX_VALUE, type Board, type RecordData } from '../src/domain';
 import { BoardSession, Conflict, type Draft, type Transport } from '../src/session';
 const hero = { id: 'hero', type: 'character' as const, folderId: null, name: 'Теодор', hp: 2000, maxHp: 2000, oh: 0, maxOh: 40, x: null, y: null };
 const board = (): Board => ({ ...emptyBoard(), characters: [{ ...hero }] });
@@ -14,6 +14,35 @@ function setup(draft: Draft | null = null) {
 }
 afterEach(() => vi.useRealTimers());
 describe('поле и характеристики', () => {
+  it('использует буквы, буквальные номера в ёлочках и отдельный номер в конце', () => {
+    for (const [name, expected] of [
+      ['Фиолетовая слизь', 'ФС'], ['Фиолетовая слизь №2', 'ФС 2'], ['Фиолетовая слизь №546', 'ФС 546'],
+      ['Прототип «№6»', 'П№6'], ['Прототип «№6» №2', 'П№6 2'], ['Фиолетовая слизь «№6» №546', 'ФС№6 546'],
+      ['123 — 😈 Фиолетовая ! слизь', 'ФС'], ['Слизь — копия', 'СК'], ['«Теодор» — !!!', 'Т'],
+      ['Éclair e\u0301toile', 'ÉE\u0301'], ['Фиолетовая слизь№0009', 'ФС 0009'], ['!!! 123', ''],
+    ]) expect(characterInitials(name), name).toBe(expected);
+  });
+  it('начинает копии с №2 и продолжает максимум, включая копии копий и ведущие нули', () => {
+    let b = board(); b.characters[0].name = 'Фиолетовая слизь';
+    b = cloneCharacter(b, 'hero', 'copy2').board; expect(b.characters[1].name).toBe('Фиолетовая слизь №2');
+    b = cloneCharacter(b, 'copy2', 'copy3').board; expect(b.characters[2].name).toBe('Фиолетовая слизь №3');
+    b.characters.push({ ...hero, id: 'manual', name: 'Фиолетовая слизь №0009' });
+    expect(cloneCharacter(b, 'hero', 'copy10').character.name).toBe('Фиолетовая слизь №10');
+    b.characters[3].name = 'Фиолетовая слизь №9007199254740993';
+    expect(cloneCharacter(b, 'hero', 'big').character.name).toBe('Фиолетовая слизь №9007199254740994');
+  });
+  it('сохраняет буквальный номер, длинную основу и последовательность после удаления ранней копии', () => {
+    let b = board(); b.characters[0].name = 'Я'.repeat(80);
+    b = cloneCharacter(b, 'hero', 'two').board; b = cloneCharacter(b, 'hero', 'three').board;
+    b.characters = b.characters.filter(c => c.id !== 'two');
+    expect(cloneCharacter(b, 'hero', 'four').character.name.endsWith(' №4')).toBe(true);
+    b = board(); b.characters[0].name = 'Прототип «№6»';
+    expect(cloneCharacter(b, 'hero', 'literal').character.name).toBe('Прототип «№6» №2');
+    b.characters[0].name = 'Я'.repeat(75) + ' «№6»';
+    const c = cloneCharacter(b, 'hero', 'long-literal').character;
+    expect(c.name.length).toBeLessThanOrEqual(80); expect(c.name).toContain('«№6»'); expect(characterInitials(c.name)).toContain('№6 2');
+    b.characters[0].name = '№' + '9'.repeat(79); expect(() => cloneCharacter(b, 'hero', 'overflow')).toThrow('80');
+  });
   it('копирует актуальные параметры независимо, сохраняя папку и сбрасывая позицию', () => {
     const b = moveCharacter(board(), 'hero', 1, 2); b.characters[0].hp = 1200; b.characters[0].oh = 20;
     const result = cloneCharacter(b, 'hero', 'copy');
