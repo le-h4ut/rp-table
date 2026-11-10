@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyBoard, moveCharacter, resizeBoard, validateBoard, numberInput, currentInput, saveFolder, removeFolder, MAX_VALUE, type Board, type RecordData } from '../src/domain';
+import { emptyBoard, moveCharacter, cloneCharacter, preparePlacement, fitCellSize, resizeBoard, validateBoard, numberInput, currentInput, saveFolder, removeFolder, MAX_VALUE, type Board, type RecordData } from '../src/domain';
 import { BoardSession, Conflict, type Draft, type Transport } from '../src/session';
 const hero = { id: 'hero', type: 'character' as const, folderId: null, name: 'Теодор', hp: 2000, maxHp: 2000, oh: 0, maxOh: 40, x: null, y: null };
 const board = (): Board => ({ ...emptyBoard(), characters: [{ ...hero }] });
@@ -14,6 +14,28 @@ function setup(draft: Draft | null = null) {
 }
 afterEach(() => vi.useRealTimers());
 describe('поле и характеристики', () => {
+  it('копирует актуальные параметры независимо, сохраняя папку и сбрасывая позицию', () => {
+    const b = moveCharacter(board(), 'hero', 1, 2); b.characters[0].hp = 1200; b.characters[0].oh = 20;
+    const result = cloneCharacter(b, 'hero', 'copy');
+    result.board.characters[1].hp = 100;
+    expect(result.board.characters[0].hp).toBe(1200); expect(b.characters).toHaveLength(1);
+    expect(result.character).toMatchObject({ id: 'copy', x: null, y: null, oh: 20, maxOh: 40, folderId: null });
+    const placed = preparePlacement(b, 'hero', 'placed-copy'); expect(placed.character.id).toBe('placed-copy');
+    const reserve = preparePlacement(board(), 'hero', 'unused'); expect(reserve.character.id).toBe('hero'); expect(reserve.board.characters).toHaveLength(1);
+  });
+  it('не теряет уникальность длинных имён копий и проверяет предел карточек', () => {
+    let b = board(); b.characters[0].name = 'Я'.repeat(80);
+    b = cloneCharacter(b, 'hero', 'one').board; b = cloneCharacter(b, 'one', 'two').board;
+    expect(new Set(b.characters.map(c => c.name)).size).toBe(3); expect(b.characters.every(c => c.name.length <= 80)).toBe(true);
+    expect(() => cloneCharacter(b, 'missing', 'bad')).toThrow(); expect(() => cloneCharacter(b, 'hero', 'hero')).toThrow();
+    b.characters = Array.from({ length: 200 }, (_, i) => ({ ...hero, id: String(i) })); expect(() => cloneCharacter(b, '0', 'extra')).toThrow('200');
+  });
+  it('вписывает квадратные и вытянутые поля с координатами и рамкой', () => {
+    for (const [width, height] of [[280, 180], [350, 400], [1200, 600]]) for (const [cols, rows] of [[10, 10], [50, 50], [1, 50], [50, 1]]) {
+      const size = fitCellSize(width, height, cols, rows), axis = Math.min(24, size * .5);
+      expect(size).toBeGreaterThan(0); expect(cols * size + axis + 1).toBeLessThanOrEqual(width); expect(rows * size + axis + 1).toBeLessThanOrEqual(height);
+    }
+  });
   it('абсолютное значение заменяет, знаковое прибавляет или вычитает', () => {
     expect(currentInput('1000', 2000, 5000, 'HP')).toBe(1000);
     expect(currentInput('+1000', 2000, 5000, 'HP')).toBe(3000);

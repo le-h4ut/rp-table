@@ -49,6 +49,7 @@ try {
   const blockedContext = await browser.newContext();
   await blockedContext.addInitScript(() => { const original = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key.startsWith('rp-table:')) throw new DOMException('Storage full', 'QuotaExceededError'); return original.call(this, key, value); }; });
   const blocked = await blockedContext.newPage(); await blocked.goto(base); await blocked.getByRole('button', { name: 'Войти', exact: true }).first().waitFor(); await blocked.getByRole('button', { name: 'Открыть библиотеку', exact: true }).click(); await blocked.getByRole('button', { name: 'Карточка', exact: true }).click(); await blocked.getByLabel('Имя персонажа').fill('Проверка хранения'); await blocked.getByRole('button', { name: 'Создать персонажа', exact: true }).click(); await blocked.getByText('Не удалось сохранить на устройстве.', { exact: false }).waitFor();
+  await blocked.waitForFunction(() => { const area = document.querySelector('.arena-scroll'); return area.clientHeight > 0 && area.scrollWidth <= area.clientWidth + 1 && area.scrollHeight <= area.clientHeight + 1; });
   await blockedContext.close();
   assert.deepEqual(errors, []); console.log('PASS: folders, typed card, external HP/OH, relative input, mouse drag, touch drag, reload, 5 screen sizes, guest storage failure warning.');
 } finally { await browser.close(); }

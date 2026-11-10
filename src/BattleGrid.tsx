@@ -1,5 +1,9 @@
-import { useRef, useState, type PointerEvent } from 'react';
-import { characterInitials, columnName, type Board, type Character } from './domain';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
+import { characterInitials, columnName, fitCellSize, type Board, type Character } from './domain';
+
+function pieceStyle(size: number): CSSProperties {
+  return { '--cell-size': `${size}px`, '--token-font': `${Math.min(20, size * 0.32)}px`, '--token-gap': `${Math.min(3, size * 0.045)}px`, '--bar-size': `${Math.min(4, size * 0.05)}px`, '--cell-pad': `${Math.min(6, size * 0.07)}px`, '--cell-border': `${Math.min(1, size * 0.035)}px` } as CSSProperties;
+}
 
 function Piece({ c }: { c: Character }) {
   return <span className="token-piece" data-token={c.id}><span className={`token ${c.hp === 0 ? 'fallen' : ''}`}><span>{characterInitials(c.name)}</span></span><span className="token-stat hp" role="progressbar" aria-label={`${c.name} HP`} aria-valuemin={0} aria-valuemax={c.maxHp} aria-valuenow={c.hp}><i style={{ width: `${c.hp / c.maxHp * 100}%` }}/></span><span className={`token-stat oh ${c.oh > c.maxOh ? 'overheat' : ''}`} role="progressbar" aria-label={`${c.name} OH`} aria-valuemin={0} aria-valuemax={Math.max(c.maxOh, c.oh, 1)} aria-valuenow={c.oh}><i style={{ width: `${c.maxOh ? Math.min(100, c.oh / c.maxOh * 100) : 0}%` }}/></span></span>;
@@ -13,6 +17,14 @@ export function BattleGrid({ board, zoom, selected, moving, chooseCell, move, no
   const drag = useRef<Drag | null>(null), suppressClick = useRef(false);
   const [ghost, setGhost] = useState<{ id: string; x: number; y: number; target: string | null } | null>(null);
   const [focus, setFocus] = useState({ x: 0, y: 0 });
+  const [viewport, setViewport] = useState({ width: 1, height: 1 });
+  const cellSize = fitCellSize(viewport.width, viewport.height, board.cols, board.rows) * zoom / 100;
+  const axis = Math.min(24, cellSize * 0.5);
+  useLayoutEffect(() => {
+    const observer = new ResizeObserver(entries => { const { width, height } = entries[0].contentRect; setViewport(old => Math.abs(old.width - width) < 0.1 && Math.abs(old.height - height) < 0.1 ? old : { width, height }); });
+    observer.observe(scroll.current!); return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => { drag.current = null; setGhost(null); if (zoom === 100 && scroll.current) { scroll.current.scrollLeft = 0; scroll.current.scrollTop = 0; } }, [cellSize, zoom, board.cols, board.rows]);
   function target(x: number, y: number) { return document.elementsFromPoint(x, y).map(el => el.closest<HTMLElement>('[data-cell]')).find(Boolean)?.dataset.cell ?? null; }
   function start(e: PointerEvent<HTMLButtonElement>, c?: Character) {
     if (!c || e.button !== 0 || !e.isPrimary) return;
@@ -40,11 +52,11 @@ export function BattleGrid({ board, zoom, selected, moving, chooseCell, move, no
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
   const ghostCharacter = board.characters.find(c => c.id === ghost?.id);
-  return <><div className="arena-scroll" ref={scroll} tabIndex={-1}><div className="board-grid" style={{ gridTemplateColumns: `28px repeat(${board.cols}, ${zoom}px)`, gridTemplateRows: `28px repeat(${board.rows}, ${zoom}px)` }}><span className="grid-corner"/>{Array.from({ length: board.cols }, (_, x) => <span className="col-label" key={`c${x}`}>{columnName(x)}</span>)}{Array.from({ length: board.rows }, (_, y) => <div className="grid-row" key={y}><span className="row-label">{y + 1}</span>{Array.from({ length: board.cols }, (_, x) => {
+  return <><div className="arena-scroll" ref={scroll} tabIndex={-1} role="region" aria-label="Область карты"><div className="board-grid" data-cell-size={cellSize} data-zoom={zoom} style={{ ...pieceStyle(cellSize), '--axis-font': `${Math.min(10, cellSize * 0.3)}px`, gridTemplateColumns: `${axis}px repeat(${board.cols}, ${cellSize}px)`, gridTemplateRows: `${axis}px repeat(${board.rows}, ${cellSize}px)` } as CSSProperties}><span className="grid-corner"/>{Array.from({ length: board.cols }, (_, x) => <span className="col-label" key={`c${x}`}>{columnName(x)}</span>)}{Array.from({ length: board.rows }, (_, y) => <div className="grid-row" key={y}><span className="row-label">{y + 1}</span>{Array.from({ length: board.cols }, (_, x) => {
     const c = board.characters.find(c => c.x === x && c.y === y), cell = `${x}-${y}`;
     return <button key={x} data-cell={cell} tabIndex={Math.min(focus.x, board.cols - 1) === x && Math.min(focus.y, board.rows - 1) === y ? 0 : -1} aria-label={`${columnName(x)}${y + 1}${c ? `, ${c.name}` : ', свободно'}`} className={`cell ${(x + y) % 2 ? 'alternating' : ''} ${moving ? 'move-mode' : ''} ${c ? 'occupied' : ''} ${c?.id === selected ? 'selected-cell' : ''} ${ghost?.id === c?.id ? 'drag-source' : ''} ${ghost?.target === cell ? 'drop-target' : ''}`} onPointerDown={e => start(e, c)} onPointerMove={update} onPointerUp={finish} onPointerCancel={() => { drag.current = null; setGhost(null); }} onLostPointerCapture={() => { drag.current = null; setGhost(null); }} onClick={e => { if (e.detail && suppressClick.current) { suppressClick.current = false; return; } chooseCell(x, y); setFocus({ x, y }); }} onContextMenu={e => { if (c) e.preventDefault(); }} onKeyDown={e => {
       const dir = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key]; if (!dir) return;
       e.preventDefault(); const nx = Math.max(0, Math.min(board.cols - 1, x + dir[0])), ny = Math.max(0, Math.min(board.rows - 1, y + dir[1])); setFocus({ x: nx, y: ny }); scroll.current?.querySelector<HTMLButtonElement>(`[data-cell="${nx}-${ny}"]`)?.focus();
     }}>{c && <Piece c={c}/>}</button>;
-  })}</div>)}</div></div>{ghost && ghostCharacter && <div className="drag-ghost" aria-hidden="true" style={{ left: ghost.x, top: ghost.y, width: zoom - 12, height: zoom - 12 }}><Piece c={ghostCharacter}/></div>}</>;
+  })}</div>)}</div></div>{ghost && ghostCharacter && <div className="drag-ghost" aria-hidden="true" style={{ ...pieceStyle(Math.max(32, cellSize)), left: ghost.x, top: ghost.y, width: Math.max(32, cellSize), height: Math.max(32, cellSize) }}><Piece c={ghostCharacter}/></div>}</>;
 }

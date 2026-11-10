@@ -44,6 +44,27 @@ export function moveCharacter(b: Board, id: string, x: number, y: number): Board
   if (b.characters.some(c => c.id !== id && c.x === x && c.y === y)) throw new Error('Эта клетка уже занята.');
   return validateBoard({ ...b, characters: b.characters.map(c => c.id === id ? { ...c, x, y } : c) });
 }
+export function cloneCharacter(b: Board, sourceId: string, newId: string): { board: Board; character: Character } {
+  const source = b.characters.find(c => c.id === sourceId);
+  if (!source) throw new Error('Исходная карточка больше не существует.');
+  if (b.characters.length >= 200) throw new Error('Можно создать не больше 200 карточек.');
+  if (!newId || b.characters.some(c => c.id === newId)) throw new Error('Не удалось создать новый ID карточки.');
+  const names = new Set(b.characters.map(c => c.name));
+  const base = source.name.replace(/ — копия(?: \d+)?$/, '');
+  let name = '', index = 1;
+  do { const suffix = ` — копия${index > 1 ? ` ${index}` : ''}`; name = base.slice(0, 80 - suffix.length).trimEnd() + suffix; index++; } while (names.has(name));
+  const character: Character = { ...structuredClone(source), id: newId, name, x: null, y: null };
+  return { board: validateBoard({ ...b, characters: [...b.characters, character] }), character };
+}
+export function preparePlacement(b: Board, id: string, cloneId: string): { board: Board; character: Character } {
+  const character = b.characters.find(c => c.id === id);
+  if (!character) throw new Error('Карточка больше не существует.');
+  return character.x === null ? { board: b, character } : cloneCharacter(b, id, cloneId);
+}
+export function fitCellSize(width: number, height: number, cols: number, rows: number): number {
+  // Half-cell coordinate gutter, plus a 2px safety margin for borders and rounding.
+  return Math.max(0.01, Math.floor(Math.min(Math.max(0, width - 2) / (cols + 0.5), Math.max(0, height - 2) / (rows + 0.5)) * 1000) / 1000);
+}
 export function resizeBoard(b: Board, title: string, cols: number, rows: number): Board {
   if (b.characters.some(c => c.x !== null && c.y !== null && (c.x >= cols || c.y >= rows))) throw new Error('Сначала переместите персонажей, которые окажутся за границей нового поля.');
   return validateBoard({ ...b, title: title.trim(), cols, rows });
