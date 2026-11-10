@@ -46,5 +46,9 @@ try {
     await page.setViewportSize({ width, height }); const size = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: innerWidth })); assert.ok(size.page <= size.viewport, `page overflow at ${width}`);
     await openLibrary(); assert.ok(await dialog().isVisible()); await dialog().getByRole('button', { name: 'Закрыть', exact: true }).click();
   }
-  assert.deepEqual(errors, []); console.log('PASS: folders, typed card, external HP/OH, relative input, mouse drag, touch drag, reload, 5 screen sizes.');
+  const blockedContext = await browser.newContext();
+  await blockedContext.addInitScript(() => { const original = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key.startsWith('rp-table:')) throw new DOMException('Storage full', 'QuotaExceededError'); return original.call(this, key, value); }; });
+  const blocked = await blockedContext.newPage(); await blocked.goto(base); await blocked.getByRole('button', { name: 'Войти', exact: true }).first().waitFor(); await blocked.getByRole('button', { name: 'Открыть библиотеку', exact: true }).click(); await blocked.getByRole('button', { name: 'Карточка', exact: true }).click(); await blocked.getByLabel('Имя персонажа').fill('Проверка хранения'); await blocked.getByRole('button', { name: 'Создать персонажа', exact: true }).click(); await blocked.getByText('Не удалось сохранить на устройстве.', { exact: false }).waitFor();
+  await blockedContext.close();
+  assert.deepEqual(errors, []); console.log('PASS: folders, typed card, external HP/OH, relative input, mouse drag, touch drag, reload, 5 screen sizes, guest storage failure warning.');
 } finally { await browser.close(); }
