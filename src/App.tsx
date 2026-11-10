@@ -1,0 +1,125 @@
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { Grid2X2, Settings2, X, MoveUpRight, MapPin, Cloud, CloudOff, LogIn, LogOut, ChevronRight, Minus, Plus, Maximize2, Shield, Trash2, Download, Check, Link2, PanelLeft } from 'lucide-react';
+import { onAuthStateChanged, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail, linkWithCredential, linkWithPopup, EmailAuthProvider, type User } from 'firebase/auth';
+import { auth, authReady, cloudBoard, google } from './firebase';
+import { BoardSession, localStore, type SessionView } from './session';
+import { MAX_VALUE, columnName, emptyBoard, moveCharacter, numberInput, currentInput, folderPath, saveFolder, removeFolder, resizeBoard, validateBoard, type Board, type Character, type Folder } from './domain';
+import { Library, FolderForm } from './Library';
+import { BattleGrid } from './BattleGrid';
+import './style.css';
+
+const nf = new Intl.NumberFormat('ru-RU');
+const format = (v: number) => nf.format(v);
+type Panel = 'character' | 'board' | 'auth' | 'account' | 'library' | 'folder' | null;
+const statuses: Record<SessionView['status'], string> = { loading: 'Подключаемся', local: 'На устройстве', dirty: 'Есть изменения', saving: 'Сохраняем', saved: 'В облаке', offline: 'Нет сети', conflict: 'Выберите версию', error: 'Ошибка сохранения' };
+
+function Modal({ title, children, close, className = '' }: { title: string; children: ReactNode; close: () => void; className?: string }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef(close); closeRef.current = close;
+  useEffect(() => { const prev = document.activeElement as HTMLElement | null; const d = ref.current!; d.showModal(); const cancel = (e: Event) => { e.preventDefault(); closeRef.current(); }; d.addEventListener('cancel', cancel); return () => { d.close(); d.removeEventListener('cancel', cancel); if (prev?.isConnected) prev.focus(); }; }, []);
+  return <dialog ref={ref} className={`modal ${className}`} aria-label={title} onClick={e => { if (e.target === ref.current) close(); }}><div className="modal-inner"><header className="modal-head"><h2>{title}</h2><button className="icon-button" aria-label="Закрыть" onClick={close}><X size={20}/></button></header>{children}</div></dialog>;
+}
+
+function Meter({ type, value, max }: { type: 'HP' | 'OH'; value: number; max: number }) {
+  const excess = type === 'OH' && value > max;
+  return <div className={`meter ${type.toLowerCase()} ${excess ? 'overheat' : ''}`}><div className="meter-caption"><span>{type === 'HP' ? 'Здоровье' : excess ? 'Перегрев · превышение' : 'Перегрев'} <b>{type}</b></span><span className="meter-numbers">{format(value)} <em>/ {format(max)}</em></span></div><div className="meter-track" role="progressbar" aria-label={type} aria-valuemin={0} aria-valuemax={Math.max(max, value, 1)} aria-valuenow={value} aria-valuetext={`${format(value)} из ${format(max)}`}><i style={{ width: `${max ? Math.min(100, value / max * 100) : 0}%` }}/></div></div>;
+}
+
+function CharacterForm({ character, board, folderId, submit, close }: { character?: Character; board: Board; folderId: string | null; submit: (c: Character) => void; close: () => void }) {
+  const [name, setName] = useState(character?.name ?? '');
+  const [values, setValues] = useState({ hp: String(character?.hp ?? 2000), maxHp: String(character?.maxHp ?? 2000), oh: String(character?.oh ?? 0), maxOh: String(character?.maxOh ?? 7273) });
+  const [error, setError] = useState('');
+  const [destination, setDestination] = useState(character ? character.folderId ?? '' : folderId ?? '');
+  const [preview, setPreview] = useState({ hp: character?.hp ?? 2000, oh: character?.oh ?? 0, maxHp: character?.maxHp ?? 2000, maxOh: character?.maxOh ?? 7273 });
+  function calculate(kind: 'hp' | 'oh', maximum = false) {
+    try {
+      const maxKey = kind === 'hp' ? 'maxHp' : 'maxOh', max = numberInput(values[maxKey], `Максимум ${kind.toUpperCase()}`);
+      if (max > MAX_VALUE || max < (kind === 'hp' ? 1 : 0)) throw new Error('Максимум вне допустимого диапазона.');
+      const next = currentInput(values[kind], preview[kind], kind === 'hp' ? max : Math.floor(max * 1.5), kind.toUpperCase());
+      setPreview(p => ({ ...p, [kind]: next, [maxKey]: max }));
+      setValues(v => ({ ...v, [kind]: String(next), ...(maximum ? { [maxKey]: String(max) } : {}) })); setError('');
+    } catch (e) { setError((e as Error).message); }
+  }
+  const onSubmit = (e: FormEvent) => { e.preventDefault(); try { const maxHp = numberInput(values.maxHp, 'Максимум HP'), maxOh = numberInput(values.maxOh, 'Максимум OH'); const c: Character = { id: character?.id ?? crypto.randomUUID(), type: 'character', folderId: destination || null, name: name.trim(), hp: currentInput(values.hp, preview.hp, maxHp, 'HP'), maxHp, oh: currentInput(values.oh, preview.oh, Math.floor(maxOh * 1.5), 'OH'), maxOh, x: character?.x ?? null, y: character?.y ?? null }; validateBoard({ ...board, cols: 50, rows: 50, characters: [c] }); submit(c); } catch (e) { setError(e instanceof Error ? e.message : 'Проверьте значения.'); } };
+  return <form onSubmit={onSubmit} className="form" onKeyDown={e => { if (e.key === 'Enter' && (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)) e.preventDefault(); }}><label>Тип карточки<select value="character" onChange={() => {}}><option value="character">Персонаж</option></select></label><label>Имя персонажа<input autoFocus required maxLength={80} value={name} placeholder="Например, Теодор" onChange={e => setName(e.target.value)}/></label><label>Папка<select value={destination} onChange={e => setDestination(e.target.value)}><option value="">Корень</option>{board.folders.map(f => <option key={f.id} value={f.id}>{folderPath(board, f.id)}</option>)}</select></label>{(['hp', 'oh'] as const).map(kind => <fieldset className={`stat-fields ${kind}`} key={kind}><legend>{kind === 'hp' ? 'Здоровье · HP' : 'Перегрев · OH'}</legend><Meter type={kind === 'hp' ? 'HP' : 'OH'} value={preview[kind]} max={preview[kind === 'hp' ? 'maxHp' : 'maxOh']}/><div className="two-fields"><label>Текущее<input aria-label={`${kind.toUpperCase()} текущее`} inputMode="text" required onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); calculate(kind); } }} value={values[kind]} onFocus={e => e.target.select()} onChange={e => setValues({ ...values, [kind]: e.target.value })}/></label><label>Максимум<input aria-label={`${kind.toUpperCase()} максимум`} inputMode="numeric" required onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); calculate(kind, true); } }} value={values[kind === 'hp' ? 'maxHp' : 'maxOh']} onChange={e => setValues({ ...values, [kind === 'hp' ? 'maxHp' : 'maxOh']: e.target.value })}/></label></div></fieldset>)}<p className="form-note">1000 — заменить значение; +1000 или -1000 — изменить текущее. Enter — пересчитать здесь; «Сохранить» — применить и закрыть. HP — до максимума; OH — до 150%.</p>{error && <p className="error-text" role="alert">{error}</p>}<footer className="form-footer"><button type="button" className="secondary" onClick={close}>Отмена</button><button className="primary" type="submit"><Check size={17}/>{character ? 'Сохранить' : 'Создать персонажа'}</button></footer></form>;
+}
+
+function BoardForm({ board, submit, close }: { board: Board; submit: (b: Board) => void; close: () => void }) {
+  const [title, setTitle] = useState(board.title), [cols, setCols] = useState(String(board.cols)), [rows, setRows] = useState(String(board.rows)), [error, setError] = useState('');
+  return <form className="form" onSubmit={e => { e.preventDefault(); try { submit(resizeBoard(board, title, numberInput(cols, 'Ширина'), numberInput(rows, 'Высота'))); } catch (e) { setError((e as Error).message); } }}><label>Название поля<input autoFocus required maxLength={80} value={title} onChange={e => setTitle(e.target.value)}/></label><div className="two-fields"><label>Ширина, клеток<input required inputMode="numeric" value={cols} onChange={e => setCols(e.target.value)}/></label><label>Высота, клеток<input required inputMode="numeric" value={rows} onChange={e => setRows(e.target.value)}/></label></div><div className="info-box"><Grid2X2 size={20}/><span>Клетка — 2 × 2 метра.<br/>Размер поля — от 1 до 50 клеток по каждой стороне.</span></div>{error && <p role="alert" className="error-text">{error}</p>}<footer className="form-footer"><button type="button" className="secondary" onClick={close}>Отмена</button><button className="primary" type="submit">Применить</button></footer></form>;
+}
+
+function authError(e: unknown) {
+  const code = (e as { code?: string })?.code;
+  return ({ 'auth/invalid-credential': 'Не удалось войти. Проверьте почту и пароль.', 'auth/email-already-in-use': 'Эта почта уже используется. Войдите существующим способом.', 'auth/weak-password': 'Пароль должен содержать хотя бы 6 символов.', 'auth/popup-blocked': 'Браузер заблокировал окно. Разрешите всплывающее окно или войдите по почте.', 'auth/popup-closed-by-user': 'Окно входа закрыто. Можно попробовать ещё раз.', 'auth/unauthorized-domain': 'Этот адрес сайта ещё не подключён к входу через Google. Вход по почте доступен.', 'auth/network-request-failed': 'Нет связи с сервисом входа. Проверьте интернет.', 'auth/too-many-requests': 'Слишком много попыток. Попробуйте немного позже.', 'auth/credential-already-in-use': 'Этот способ уже привязан к другому профилю. Войдите в него отдельно.', 'auth/requires-recent-login': 'Войдите в аккаунт заново, затем повторите привязку.', 'auth/provider-already-linked': 'Этот способ входа уже подключён.' } as Record<string, string>)[code ?? ''] ?? 'Не удалось выполнить вход. Проверьте соединение и попробуйте снова.';
+}
+
+function AuthForm({ user }: { user: User | null }) {
+  const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login'), [email, setEmail] = useState(user?.email ?? ''), [password, setPassword] = useState(''), [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [error, setError] = useState('');
+  const hasPassword = !!user?.providerData.some(p => p.providerId === 'password');
+  const hasGoogle = !!user?.providerData.some(p => p.providerId === 'google.com');
+  async function run(fn: () => Promise<unknown>, success = '') { setError(''); setMessage(''); setBusy(true); try { await authReady; await fn(); setPassword(''); setMessage(success); } catch (e) { setError(authError(e)); } finally { setBusy(false); } }
+  return <div className="auth-content">{user ? <div className="account-identity"><div className="avatar"><Shield size={22}/></div><div><strong>Личный стол</strong><span>{user.email}</span></div></div> : <><div className="auth-intro"><div className="auth-mark"><Grid2X2 size={27}/></div><h3>Ваш стол — на всех устройствах</h3><p>Войдите, чтобы сохранять поле и персонажей в облаке.</p></div><button className="google-button" disabled={busy} onClick={() => void run(() => signInWithPopup(auth, google))}><span className="google-g">G</span>Продолжить с Google</button><div className="divider"><span>или по почте</span></div></>}
+    {user && !hasGoogle && <button className="secondary full-width" disabled={busy} onClick={() => void run(() => linkWithPopup(user, google), 'Google подключён к этому профилю.')}><Link2 size={17}/>Подключить Google</button>}
+    {(!user || !hasPassword) && <form className="form" onSubmit={e => { e.preventDefault(); void run(async () => {
+      if (user) { await linkWithCredential(user, EmailAuthProvider.credential(user.email!, password)); return; }
+      if (mode === 'register') { await createUserWithEmailAndPassword(auth, email, password); return; }
+      if (mode === 'reset') { await sendPasswordResetEmail(auth, email); return; }
+      await signInWithEmailAndPassword(auth, email, password);
+    }, user ? 'Пароль подключён к этому профилю.' : mode === 'reset' ? 'Если аккаунт существует, письмо для восстановления отправлено.' : ''); }}>
+      <label>Почта<input autoFocus type="email" autoComplete="email" required value={email} disabled={!!user || busy} onChange={e => setEmail(e.target.value)}/></label>
+      {mode !== 'reset' && <label>{user ? 'Новый пароль для сайта' : 'Пароль'}<input type="password" minLength={6} required autoComplete={user || mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)} disabled={busy}/></label>}
+      <button className="primary full-width" disabled={busy} type="submit">{busy ? 'Подождите…' : user ? 'Добавить пароль' : mode === 'register' ? 'Создать аккаунт' : mode === 'reset' ? 'Отправить письмо' : 'Войти'}</button>
+    </form>}
+    {user && hasPassword && <p className="success-note"><Check size={16}/>Вход по почте и паролю подключён.</p>}{user && hasGoogle && <p className="success-note"><Check size={16}/>Google подключён к этому профилю.</p>}
+    {!user && <div className="auth-switch"><button disabled={busy} onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setError(''); setMessage(''); }}>{mode === 'register' ? 'Уже есть аккаунт? Войти' : 'Первый раз? Создать аккаунт'}</button><button disabled={busy} onClick={() => { setMode(mode === 'reset' ? 'login' : 'reset'); setError(''); setMessage(''); }}>{mode === 'reset' ? 'Назад ко входу' : 'Забыли пароль?'}</button></div>}
+    {error && <p role="alert" className="error-text">{error}</p>}{message && <p role="status" className="success-note">{message}</p>}
+  </div>;
+}
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null), [authLoading, setAuthLoading] = useState(true);
+  const [guestDraft, setGuestDraft] = useState<Board | null>(null);
+  const [session, setSession] = useState(() => new BoardSession(localStore('rp-table:guest:v1')));
+  const view = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const [panel, setPanel] = useState<Panel>(null), [editing, setEditing] = useState<Character>(), [selected, setSelected] = useState<string | null>(null), [moving, setMoving] = useState<string | null>(null), [zoom, setZoom] = useState(64), [notice, setNotice] = useState('');
+  const [activeFolder, setActiveFolder] = useState<string | null>(null), [editingFolder, setEditingFolder] = useState<Folder>();
+  const { board } = view;
+  const movingChar = board.characters.find(c => c.id === moving);
+  const mountedSession = useRef(session);
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, u => { mountedSession.current.dispose(); const next = new BoardSession(localStore(`rp-table:${u?.uid ?? 'guest'}:v1`), u ? cloudBoard(u.uid) : undefined); mountedSession.current = next; setSession(next); setUser(u); setAuthLoading(false); setSelected(null); setMoving(null); setPanel(null); });
+    void authReady.catch(() => setNotice('Браузер ограничил сохранение входа. Проверьте настройки хранения сайта.'));
+    return () => { unsub(); mountedSession.current.dispose(); };
+  }, []);
+  useEffect(() => { const f = () => session.retry(); window.addEventListener('online', f); return () => window.removeEventListener('online', f); }, [session]);
+  useEffect(() => { try { const d = localStore('rp-table:guest:v1').read(); setGuestDraft(user && d?.board.characters.length ? d.board : null); } catch { setGuestDraft(null); } }, [user]);
+  useEffect(() => { const f = (e: BeforeUnloadEvent) => { if (view.localFailure || (view.dirty && user)) { e.preventDefault(); } }; window.addEventListener('beforeunload', f); return () => window.removeEventListener('beforeunload', f); }, [view.localFailure, view.dirty, user]);
+  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(''), 6500); return () => clearTimeout(t); }, [notice]);
+  useEffect(() => { if (activeFolder && !board.folders.some(f => f.id === activeFolder)) setActiveFolder(null); }, [activeFolder, board.folders]);
+  function edit(b: Board) { try { session.edit(b); return true; } catch (e) { setNotice((e as Error).message); return false; } }
+  function saveCharacter(c: Character) { if (editing && JSON.stringify(board.characters.find(old => old.id === c.id)) !== JSON.stringify(editing)) throw new Error('Карточка изменилась на другом устройстве. Закройте и откройте её заново, чтобы не затереть новые значения.'); const next = { ...board, characters: editing ? board.characters.map(old => old.id === c.id ? c : old) : [...board.characters, c] }; if (edit(next)) { setPanel(null); setSelected(c.id); } }
+  function openCard(c: Character) { setSelected(c.id); setEditing(c); setPanel('character'); }
+  function move(id: string, x: number, y: number) { try { if (edit(moveCharacter(board, id, x, y))) { setSelected(id); setMoving(null); setNotice(`Позиция: ${columnName(x)}${y + 1}`); } } catch (e) { setNotice((e as Error).message); } }
+  function chooseCell(x: number, y: number) { const occupant = board.characters.find(c => c.x === x && c.y === y); if (moving) move(moving, x, y); else if (occupant) openCard(occupant); }
+  function startMove(c: Character) { setSelected(c.id); setMoving(c.id); setPanel(null); }
+  function download() { const blob = new Blob([JSON.stringify(board, null, 2)], { type: 'application/json' }); const href = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = href; a.download = 'rp-table-board.json'; a.click(); setTimeout(() => URL.revokeObjectURL(href), 1000); }
+  function newCharacter() { setEditing(undefined); setPanel('character'); }
+  return <div className="app-shell"><header className="topbar"><button className="icon-button library-toggle" aria-label="Открыть библиотеку" onClick={() => setPanel('library')}><PanelLeft size={23}/></button><a className="brand" href="./" aria-label="RP Table — главная"><span className="brand-mark"><Grid2X2 size={22}/></span><span>RP<span className="brand-muted">Table</span><small>ВАШЕ ПОЛЕ. ВАШИ ПРАВИЛА.</small></span></a><div className="top-actions"><span className="version-pill">Ранняя версия</span><button className="account-button" disabled={authLoading} onClick={() => setPanel(user ? 'account' : 'auth')}>{user ? <Shield size={17}/> : <LogIn size={17}/>}<span>{authLoading ? 'Подключение…' : user ? 'Мой аккаунт' : 'Войти'}</span></button></div></header>
+    <main><div className="page-heading"><div><div className="eyebrow"><span/>ИГРОВОЙ СТОЛ</div><h1>{board.title}</h1><p>Расставьте героев. История начинается здесь.</p></div><div className="heading-actions"><button className="secondary" onClick={() => setPanel('board')}><Settings2 size={17}/><span>Настроить поле</span></button><button className="secondary" onClick={() => setPanel('library')}><PanelLeft size={18}/><span>Библиотека</span></button></div></div>
+    {!user && !authLoading && <div className="guest-banner"><div><Cloud size={20}/><span><strong>Пока на этом устройстве</strong><small>Войдите, чтобы открыть этот стол с телефона и компьютера.</small></span></div><button className="text-button" onClick={() => setPanel('auth')}>Войти<ChevronRight size={17}/></button></div>}
+    {user && guestDraft && view.ready && !board.characters.length && <div className="guest-banner"><div><Cloud size={20}/><span><strong>На устройстве есть гостевое поле</strong><small>Можно перенести его в этот аккаунт.</small></span></div><button className="text-button" onClick={() => { if (edit(guestDraft)) setGuestDraft(null); }}>Перенести<ChevronRight size={17}/></button></div>}
+    {user && <div className={`sync-line ${view.status}`}><div>{view.status === 'offline' ? <CloudOff size={16}/> : <Cloud size={16}/>}<span>{statuses[view.status]}</span>{view.message && <small>{view.message}</small>}</div>{['error', 'offline'].includes(view.status) && <button className="text-button" onClick={() => session.retry()}>Повторить</button>}{view.status === 'conflict' && <div className="conflict-actions"><button className="secondary" onClick={download}><Download size={16}/>Скачать мою версию</button><button className="secondary" onClick={() => { if (confirm('Загрузить версию из облака вместо правок на этом устройстве? Сначала можно скачать свою версию.')) session.loadCloud(); }}>Загрузить облачную</button></div>}</div>}
+    <div className="workspace"><section className="arena-panel" aria-label="Поле боя"><div className="arena-toolbar"><div className="arena-meta"><Grid2X2 size={16}/><strong>{board.cols} × {board.rows}</strong><span>Клетка 2 м</span></div><div className="zoom-controls"><button className="icon-button" aria-label="Уменьшить клетки" disabled={zoom === 48} onClick={() => setZoom(Math.max(48, zoom - 16))}><Minus size={16}/></button><span>{Math.round(zoom / 64 * 100)}%</span><button className="icon-button" aria-label="Увеличить клетки" disabled={zoom === 96} onClick={() => setZoom(Math.min(96, zoom + 16))}><Plus size={16}/></button></div></div>
+      <BattleGrid board={board} zoom={zoom} selected={selected} moving={moving} chooseCell={chooseCell} move={move} notify={setNotice}/>
+      <div className={`arena-footer ${movingChar ? 'moving' : ''}`}><span>{movingChar ? <MoveUpRight size={17}/> : <MapPin size={17}/>}<span>{movingChar ? <>Выберите клетку для <strong>{movingChar.name}</strong></> : board.characters.length ? 'Нажмите на персонажа или перетащите его' : 'Откройте библиотеку и создайте персонажа'}</span></span>{movingChar ? <button className="text-button" onClick={() => setMoving(null)}>Отмена</button> : <span className="board-size">{board.cols * 2} × {board.rows * 2} м</span>}</div></section>
+    </div>
+    <div className="bottom-caption"><span>RP TABLE <b> / </b> ПОЛЕ ДЛЯ ВАШИХ ИСТОРИЙ</span><span>Первая глава · v0.1</span></div></main>
+    {notice && <div className="toast" role="status">{notice}<button className="icon-button" aria-label="Скрыть сообщение" onClick={() => setNotice('')}><X size={16}/></button></div>}
+    {panel === 'character' && <Modal title={editing ? 'Карточка персонажа' : 'Новый персонаж'} close={() => setPanel(null)}><CharacterForm key={editing?.id ?? 'new'} character={editing} board={board} folderId={activeFolder} submit={saveCharacter} close={() => setPanel(null)}/>{editing && <div className="card-field-actions"><button className="primary" type="button" onClick={() => { const current = board.characters.find(c => c.id === editing.id); if (current) startMove(current); }}><MoveUpRight size={17}/>{board.characters.find(c => c.id === editing.id)?.x == null ? 'Поставить на поле' : 'Переместить на поле'}</button><button className="secondary" onClick={() => { if (edit({ ...board, characters: board.characters.map(c => c.id === editing.id ? { ...c, x: null, y: null } : c) })) { setMoving(null); setPanel(null); } }}><Maximize2 size={16}/>В резерв</button><button className="icon-button danger" aria-label="Удалить персонажа" onClick={() => { if (confirm(`Удалить персонажа «${editing.name}»?`) && edit({ ...board, characters: board.characters.filter(c => c.id !== editing.id) })) { setSelected(null); setMoving(null); setPanel(null); } }}><Trash2 size={17}/></button><p className="form-note">Кнопки поля закрывают карточку без сохранения правок формы.</p></div>}</Modal>}
+    {panel === 'board' && <Modal title="Настройки поля" close={() => setPanel(null)}><BoardForm board={board} submit={b => { if (edit(b)) setPanel(null); }} close={() => setPanel(null)}/></Modal>}
+    {panel === 'library' && <Modal title="Библиотека" className="library-modal" close={() => setPanel(null)}><Library board={board} activeFolder={activeFolder} selectFolder={setActiveFolder} openCard={openCard} newCard={newCharacter} editFolder={f => { setEditingFolder(f); setPanel('folder'); }}/></Modal>}
+    {panel === 'folder' && <Modal title={editingFolder ? 'Настройки папки' : 'Новая папка'} close={() => setPanel('library')}><FolderForm board={board} folder={editingFolder} parentId={activeFolder} close={() => setPanel('library')} submit={f => { if (editingFolder && JSON.stringify(board.folders.find(old => old.id === f.id)) !== JSON.stringify(editingFolder)) throw new Error('Папка изменилась. Откройте её заново.'); if (edit(saveFolder(board, f))) { setActiveFolder(f.id); setPanel('library'); } }} remove={id => { if (confirm('Удалить только эту папку? Её карточки и вложенные папки будут перенесены на уровень выше.') && edit(removeFolder(board, id))) { setActiveFolder(null); setPanel('library'); } }}/></Modal>}
+    {(panel === 'auth'  || panel === 'account') && <Modal title={user ? 'Мой аккаунт' : 'Войти в RP Table'} close={() => setPanel(null)}><AuthForm user={user}/>{user && <div className="account-footer"><p>Ваши сохранения доступны только этому профилю.</p><button className="secondary full-width" disabled={view.status === 'saving'} onClick={() => { if (view.localFailure) { setNotice('Локальное сохранение недоступно. Сначала сохраните изменения.'); return; } if (view.dirty && !confirm('Последние правки пока только на этом устройстве. Они сохранятся для этого аккаунта. Выйти?')) return; void signOut(auth).catch(e => setNotice(authError(e))); }}><LogOut size={17}/>Выйти из аккаунта</button></div>}</Modal>}
+  </div>;
+}
